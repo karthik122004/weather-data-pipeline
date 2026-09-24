@@ -45,7 +45,7 @@ def generate_partition_path(base_path, timestamp):
 
 def generate_filename(location, timestamp):
     """Generate idempotent filename with timestamp."""
-    timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
+    timestamp_str = timestamp.strftime("%Y%m%d")
     return f"weather_{location}_{timestamp_str}.json"
 
 def ensure_directory_exists(path):

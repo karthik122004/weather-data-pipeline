@@ -6,31 +6,6 @@ BRONZE_TABLE = "my_project_catalog.weather_schema.bronze_weather_raw"
 
 # COMMAND ----------
 
-# DBTITLE 1,Define Schema
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, LongType
-)
-
-# Define schema explicitly for performance and data safety
-schema = StructType([
-    StructField("metadata", StructType([
-        StructField("ingestion_timestamp", StringType(), True),
-        StructField("source_api", StringType(), True),
-        StructField("location", StringType(), True),
-        StructField("latitude", DoubleType(), True),
-        StructField("longitude", DoubleType(), True),
-        StructField("ingestion_version", StringType(), True)
-    ]), True),
-    StructField("raw_data", StructType([
-        StructField("latitude", DoubleType(), True),
-        StructField("longitude", DoubleType(), True),
-        StructField("timezone", StringType(), True),
-        StructField("elevation", DoubleType(), True)
-    ]), True)
-])
-
-# COMMAND ----------
-
 # DBTITLE 1,Read JSON Files
 # Read JSON files recursively with multiline support (lazy evaluation)
 df_raw = spark.read \
@@ -59,12 +34,17 @@ df_bronze = df_raw \
 
 # COMMAND ----------
 
-# DBTITLE 1,Write to Delta Table
-# Write to Delta table (ACID transactions, time travel, schema enforcement)
-df_bronze.write \
-    .format("delta") \
-    .mode("append") \
-    .saveAsTable(BRONZE_TABLE)
+# DBTITLE 1,MERGE into Delta Table (Incremental Insert)
+# INCREMENTAL: Only insert NEW files not already in bronze table.
+# Uses MERGE on source_file to skip already-loaded files - no duplicates.
+df_bronze.createOrReplaceTempView("bronze_updates")
+
+spark.sql(f"""
+    MERGE INTO {BRONZE_TABLE} AS t
+    USING bronze_updates AS s
+    ON t.source_file = s.source_file
+    WHEN NOT MATCHED THEN INSERT *
+""")
 
 # COMMAND ----------
 
@@ -79,3 +59,5 @@ df_verify.select(
     "load_timestamp",
     "source_file"
 ).show(5, truncate=80)
+
+print(f"Bronze table row count: {row_count}")

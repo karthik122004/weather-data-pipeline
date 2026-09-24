@@ -20,7 +20,6 @@ from pyspark.sql.functions import (
 )
 
 # Zip parallel arrays together, then explode into individual rows
-# Before: 1 row with arrays[168] -> After: 168 rows with flat columns
 df_hourly_zipped = df_bronze.select(
     col("metadata.location").alias("location"),
     col("metadata.ingestion_timestamp").alias("ingestion_timestamp"),
@@ -35,13 +34,11 @@ df_hourly_zipped = df_bronze.select(
     ).alias("hourly_data")
 )
 
-# Explode array of structs into rows
 df_hourly_exploded = df_hourly_zipped.select(
     "location", "ingestion_timestamp", "load_timestamp",
     explode("hourly_data").alias("hourly_record")
 )
 
-# Flatten struct fields into top-level columns
 df_hourly_flat = df_hourly_exploded.select(
     "location", "ingestion_timestamp", "load_timestamp",
     col("hourly_record.time").alias("observation_time"),
@@ -59,13 +56,11 @@ df_hourly_flat.show(5, truncate=False)
 # DBTITLE 1,Data Quality & Cleaning
 from pyspark.sql.functions import to_timestamp, when
 
-# Convert string timestamp to proper TIMESTAMP type
 df_hourly_cleaned = df_hourly_flat \
     .withColumn("observation_timestamp",
         to_timestamp(col("observation_time"), "yyyy-MM-dd'T'HH:mm")) \
     .drop("observation_time")
 
-# Add data quality validation flags
 df_hourly_quality = df_hourly_cleaned \
     .withColumn("is_valid_temperature",
         when((col("temperature_fahrenheit").isNotNull()) &
@@ -81,8 +76,9 @@ df_hourly_quality = df_hourly_cleaned \
 
 # COMMAND ----------
 
-# DBTITLE 1,Write Silver Hourly Table
-# Select final columns and write to Delta
+# DBTITLE 1,MERGE Silver Hourly Table (Upsert)
+# INCREMENTAL: Upsert on (location, observation_timestamp).
+# Updates existing hours with latest values, inserts new hours.
 df_silver_hourly = df_hourly_quality.select(
     "location", "observation_timestamp",
     "temperature_fahrenheit", "humidity_percent",
@@ -92,14 +88,19 @@ df_silver_hourly = df_hourly_quality.select(
     "ingestion_timestamp", "load_timestamp", "silver_processing_timestamp"
 )
 
-df_silver_hourly.write \
-    .format("delta") \
-    .mode("append") \
-    .saveAsTable(SILVER_TABLE_HOURLY)
+df_silver_hourly.createOrReplaceTempView("silver_hourly_updates")
+
+spark.sql(f"""
+    MERGE INTO {SILVER_TABLE_HOURLY} AS t
+    USING silver_hourly_updates AS s
+    ON t.location = s.location AND t.observation_timestamp = s.observation_timestamp
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+""")
 
 # COMMAND ----------
 
-# DBTITLE 1,Write Silver Daily Table
+# DBTITLE 1,Transform & MERGE Silver Daily Table
 # Same explode pattern for daily forecast data
 df_daily_zipped = df_bronze.select(
     col("metadata.location").alias("location"),
@@ -126,15 +127,20 @@ df_daily_flat = df_daily_zipped.select(
     current_timestamp().alias("silver_processing_timestamp")
 )
 
-df_daily_flat.write \
-    .format("delta") \
-    .mode("append") \
-    .saveAsTable(SILVER_TABLE_DAILY)
+# INCREMENTAL: Upsert on (location, forecast_date)
+df_daily_flat.createOrReplaceTempView("silver_daily_updates")
+
+spark.sql(f"""
+    MERGE INTO {SILVER_TABLE_DAILY} AS t
+    USING silver_daily_updates AS s
+    ON t.location = s.location AND t.forecast_date = s.forecast_date
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+""")
 
 # COMMAND ----------
 
 # DBTITLE 1,Verify Silver Tables
-# Verify Silver tables
 spark.sql(f"""
     SELECT observation_timestamp, temperature_fahrenheit, humidity_percent,
            precipitation_inches, is_valid_temperature

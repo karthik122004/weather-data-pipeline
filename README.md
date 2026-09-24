@@ -11,9 +11,9 @@ This project follows the **medallion architecture** pattern, a data engineering 
 | Layer | Purpose | Data Shape | Key Transformations |
 | --- | --- | --- | --- |
 | **Ingestion** | Fetch raw data from Open-Meteo API | JSON files in UC Volumes | API calls, partitioned storage, audit logging |
-| **Bronze** | Land raw data into Delta tables | Grows by 1 row per run | Schema enforcement, technical columns (lineage) |
-| **Silver** | Clean, flatten, and validate | Grows by 168 rows per run | `explode()`, `arrays_zip()`, data quality flags |
-| **Gold** | Business metrics and aggregations | Grows by 7 rows per run | `groupBy().agg()`, window functions, business logic |
+| **Bronze** | Land raw data into Delta tables | 1 row per daily file | `MERGE` (insert-only on `source_file`), schema enforcement, technical columns |
+| **Silver** | Clean, flatten, and validate | Upserted per observation hour/day | `MERGE` (upsert on natural keys), `explode()`, `arrays_zip()`, data quality flags |
+| **Gold** | Business metrics and aggregations | 7 rows (recomputed each run) | `OVERWRITE` (window functions need full recompute), `groupBy().agg()`, business logic |
 
 ### Data Flow
 
@@ -24,24 +24,25 @@ Open-Meteo API
 [Ingestion Notebook]
       |  Fetches 7-day forecast for Austin, TX
       |  Saves partitioned JSON to Unity Catalog Volumes
+      |  Date-only filenames (idempotent — re-running same day overwrites same file)
       v
 [Bronze Layer]
       |  Reads JSON with PySpark (lazy evaluation)
       |  Adds lineage columns (load_timestamp, source_file)
-      |  Writes to Delta table with ACID guarantees
+      |  MERGE into Delta table (insert-only on source_file — no duplicates)
       v
 [Silver Layer]
       |  Explodes nested arrays into flat rows (168 hourly observations)
       |  Converts string timestamps to TIMESTAMP type
       |  Adds data quality validation flags
-      |  Writes hourly + daily Delta tables
+      |  MERGE into hourly + daily Delta tables (upsert on natural keys)
       v
 [Gold Layer]
       |  Aggregates hourly → daily summaries (avg, min, max, sum)
       |  Adds window functions (lag, lead, row_number) for trends
       |  Rolls up daily → weekly summaries
       |  Adds business flags (is_hot_day, is_rainy_day)
-      |  Writes Gold Delta tables for BI consumption
+      |  OVERWRITE Gold Delta tables (full recompute for accurate trends)
 ```
 
 ---
@@ -86,7 +87,7 @@ Open-Meteo API
 
 - **ACID transactions** — No partial writes if the pipeline fails mid-execution
 - **Time travel** — Query table state at any previous version (`SELECT * FROM table VERSION AS OF 1`)
-- **Schema enforcement** — `overwriteSchema` option ensures structural integrity
+- **MERGE (upsert)** — Bronze uses insert-only MERGE on `source_file` to skip already-loaded files; Silver uses upsert MERGE on natural keys to update existing observations and insert new ones — no duplicates on re-runs
 
 ---
 
@@ -109,15 +110,19 @@ The pipeline is orchestrated using **Databricks Jobs** with serverless compute:
 
 ### Incremental Loading
 
-All layers use `mode("append")` to accumulate data over time. Each daily run adds a new batch of forecast data:
+The pipeline uses a hybrid incremental strategy designed for weather forecast data, where overlapping forecasts update over time:
+
+- **Bronze** — `MERGE` (insert-only on `source_file`): Only inserts new daily JSON files, skips already-loaded ones. Grows by 1 row per day.
+- **Silver** — `MERGE` (upsert on natural keys): Updates existing hours/days with the latest forecast values, inserts new observation periods. Accumulates unique observations without duplicates.
+- **Gold** — `OVERWRITE`: Full recompute from Silver each run. Window functions (`lag`, `lead`, `row_number`) require the complete dataset to calculate day-over-day trends, so individual rows cannot be incrementally updated.
 
 ```
-Day 1:  Bronze = 1 row,   Silver = 168 rows,   Gold = 7 rows
-Day 2:  Bronze = 2 rows,  Silver = 336 rows,   Gold = 14 rows
-Day 30: Bronze = 30 rows, Silver = 5,040 rows, Gold = 210 rows
+Day 1:  Bronze = 1 row,   Silver = 168 rows (7 days x 24h),  Gold = 7 rows
+Day 2:  Bronze = 2 rows,  Silver = ~192 rows (updated + new),  Gold = 8 rows (recomputed)
+Day 30: Bronze = 30 rows, Silver = ~864 rows (36 unique days x 24h),  Gold = 36 rows (recomputed)
 ```
 
-This enables historical trend analysis — you can compare how forecasts evolved over time and measure prediction accuracy.
+Bronze preserves every raw API response for audit, Silver maintains the latest known observation per hour/day, and Gold always reflects the current best summary with accurate trends.
 
 ### Why Serverless?
 
@@ -203,7 +208,7 @@ ORDER BY week_start_date;
 ## Future Enhancements
 
 - [ ] Add more cities for multi-location comparison
-- [x] Incremental loading with append mode (accumulates forecast history daily)
+- [x] Incremental loading with MERGE (Bronze/Silver) + overwrite (Gold) — no duplicates, accumulates forecast history daily
 - [ ] Build a Lakeview dashboard on Gold tables
 - [ ] Set up SQL alerts for extreme weather events
 - [ ] Add data quality monitoring with expectations
