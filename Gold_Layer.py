@@ -113,15 +113,13 @@ df_gold_daily_select = df_gold_daily.select(
 
 df_gold_daily_select.write \
     .format("delta") \
-    .mode("overwrite") \
-    .option("overwriteSchema", "true") \
+    .mode("append") \
     .saveAsTable(GOLD_DAILY_SUMMARY)
 
 # Write weekly Gold table
 df_weekly_summary.write \
     .format("delta") \
-    .mode("overwrite") \
-    .option("overwriteSchema", "true") \
+    .mode("append") \
     .saveAsTable(GOLD_WEEKLY_SUMMARY)
 
 # COMMAND ----------

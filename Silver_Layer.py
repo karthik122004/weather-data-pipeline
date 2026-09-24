@@ -94,8 +94,7 @@ df_silver_hourly = df_hourly_quality.select(
 
 df_silver_hourly.write \
     .format("delta") \
-    .mode("overwrite") \
-    .option("overwriteSchema", "true") \
+    .mode("append") \
     .saveAsTable(SILVER_TABLE_HOURLY)
 
 # COMMAND ----------
@@ -129,8 +128,7 @@ df_daily_flat = df_daily_zipped.select(
 
 df_daily_flat.write \
     .format("delta") \
-    .mode("overwrite") \
-    .option("overwriteSchema", "true") \
+    .mode("append") \
     .saveAsTable(SILVER_TABLE_DAILY)
 
 # COMMAND ----------

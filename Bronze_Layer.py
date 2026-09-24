@@ -63,8 +63,7 @@ df_bronze = df_raw \
 # Write to Delta table (ACID transactions, time travel, schema enforcement)
 df_bronze.write \
     .format("delta") \
-    .mode("overwrite") \
-    .option("overwriteSchema", "true") \
+    .mode("append") \
     .saveAsTable(BRONZE_TABLE)
 
 # COMMAND ----------

@@ -11,9 +11,9 @@ This project follows the **medallion architecture** pattern, a data engineering 
 | Layer | Purpose | Data Shape | Key Transformations |
 | --- | --- | --- | --- |
 | **Ingestion** | Fetch raw data from Open-Meteo API | JSON files in UC Volumes | API calls, partitioned storage, audit logging |
-| **Bronze** | Land raw data into Delta tables | 1 row with nested structs/arrays | Schema enforcement, technical columns (lineage) |
-| **Silver** | Clean, flatten, and validate | 175 flat rows (168 hourly + 7 daily) | `explode()`, `arrays_zip()`, data quality flags |
-| **Gold** | Business metrics and aggregations | 7 daily + 2 weekly summary rows | `groupBy().agg()`, window functions, business logic |
+| **Bronze** | Land raw data into Delta tables | Grows by 1 row per run | Schema enforcement, technical columns (lineage) |
+| **Silver** | Clean, flatten, and validate | Grows by 168 rows per run | `explode()`, `arrays_zip()`, data quality flags |
+| **Gold** | Business metrics and aggregations | Grows by 7 rows per run | `groupBy().agg()`, window functions, business logic |
 
 ### Data Flow
 
@@ -107,6 +107,18 @@ The pipeline is orchestrated using **Databricks Jobs** with serverless compute:
 | Max Concurrent Runs | 1 |
 | Failure Handling | Downstream tasks skip on failure |
 
+### Incremental Loading
+
+All layers use `mode("append")` to accumulate data over time. Each daily run adds a new batch of forecast data:
+
+```
+Day 1:  Bronze = 1 row,   Silver = 168 rows,   Gold = 7 rows
+Day 2:  Bronze = 2 rows,  Silver = 336 rows,   Gold = 14 rows
+Day 30: Bronze = 30 rows, Silver = 5,040 rows, Gold = 210 rows
+```
+
+This enables historical trend analysis — you can compare how forecasts evolved over time and measure prediction accuracy.
+
 ### Why Serverless?
 
 Serverless compute eliminates cluster startup overhead (seconds vs minutes), auto-scales to workload size, and bills only for actual compute time — ideal for a lightweight batch pipeline with 4 short tasks.
@@ -191,7 +203,7 @@ ORDER BY week_start_date;
 ## Future Enhancements
 
 - [ ] Add more cities for multi-location comparison
-- [ ] Implement incremental loading (MERGE instead of OVERWRITE)
+- [x] Incremental loading with append mode (accumulates forecast history daily)
 - [ ] Build a Lakeview dashboard on Gold tables
 - [ ] Set up SQL alerts for extreme weather events
 - [ ] Add data quality monitoring with expectations
