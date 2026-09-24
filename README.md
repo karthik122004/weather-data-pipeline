@@ -11,7 +11,7 @@ This project follows the **medallion architecture** pattern, a data engineering 
 | Layer | Purpose | Data Shape | Key Transformations |
 | --- | --- | --- | --- |
 | **Ingestion** | Fetch raw data from Open-Meteo API | JSON files in UC Volumes | API calls, partitioned storage, audit logging |
-| **Bronze** | Land raw data into Delta tables | 1 row per daily file | `MERGE` (insert-only on `source_file`), schema enforcement, technical columns |
+| **Bronze** | Land raw data into Delta tables | 1 row per daily file | `MERGE` (insert-only on `source_file`), technical columns (lineage) |
 | **Silver** | Clean, flatten, and validate | Upserted per observation hour/day | `MERGE` (upsert on natural keys), `explode()`, `arrays_zip()`, data quality flags |
 | **Gold** | Business metrics and aggregations | 7 rows (recomputed each run) | `OVERWRITE` (window functions need full recompute), `groupBy().agg()`, business logic |
 
