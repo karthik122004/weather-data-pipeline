@@ -79,6 +79,9 @@ df_hourly_quality = df_hourly_cleaned \
 # DBTITLE 1,MERGE Silver Hourly Table (Upsert)
 # INCREMENTAL: Upsert on (location, observation_timestamp).
 # Updates existing hours with latest values, inserts new hours.
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number, desc
+
 df_silver_hourly = df_hourly_quality.select(
     "location", "observation_timestamp",
     "temperature_fahrenheit", "humidity_percent",
@@ -87,6 +90,10 @@ df_silver_hourly = df_hourly_quality.select(
     "is_valid_temperature", "is_valid_humidity",
     "ingestion_timestamp", "load_timestamp", "silver_processing_timestamp"
 )
+
+# Deduplicate on (location, observation_timestamp), keeping the latest ingestion
+w_hourly = Window.partitionBy("location", "observation_timestamp").orderBy(desc("ingestion_timestamp"))
+df_silver_hourly = df_silver_hourly.withColumn("_rn", row_number().over(w_hourly)).filter("_rn = 1").drop("_rn")
 
 df_silver_hourly.createOrReplaceTempView("silver_hourly_updates")
 
@@ -126,6 +133,13 @@ df_daily_flat = df_daily_zipped.select(
     col("daily_record.weather_code").alias("weather_code"),
     current_timestamp().alias("silver_processing_timestamp")
 )
+
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number, desc
+
+# Deduplicate on (location, forecast_date), keeping the latest load
+w_daily = Window.partitionBy("location", "forecast_date").orderBy(desc("load_timestamp"))
+df_daily_flat = df_daily_flat.withColumn("_rn", row_number().over(w_daily)).filter("_rn = 1").drop("_rn")
 
 # INCREMENTAL: Upsert on (location, forecast_date)
 df_daily_flat.createOrReplaceTempView("silver_daily_updates")
